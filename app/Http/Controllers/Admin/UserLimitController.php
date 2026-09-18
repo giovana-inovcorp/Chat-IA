@@ -42,12 +42,7 @@ class UserLimitController extends Controller
 
         $user->update($validated);
 
-        return response()->json($user->fresh([
-            'id', 'name', 'email', 'is_admin',
-            'monthly_token_limit', 'monthly_cost_limit_usd',
-            'tokens_used_this_month', 'cost_used_this_month',
-            'usage_reset_at',
-        ]));
+        return response()->json($user->fresh());
     }
 
     public function resetUsage(User $user): JsonResponse
@@ -59,6 +54,7 @@ class UserLimitController extends Controller
         $user->usage_reset_at         = now();
         $user->save();
 
-        return response()->json($user->fresh());
+        $user->refresh();
+        return response()->json($user);
     }
 }

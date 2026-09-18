@@ -179,6 +179,7 @@ onMounted(fetchUsers)
                                         </button>
                                         <button
                                             class="text-xs px-2.5 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
+                                            type="button"
                                             :disabled="resetting === user.id"
                                             @click="resetUsage(user)"
                                         >

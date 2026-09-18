@@ -28,6 +28,7 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'usage_reset_at' => 'datetime',
         ];
     }
 
@@ -39,5 +40,10 @@ class User extends Authenticatable
     public function prompts(): HasMany
     {
         return $this->hasMany(Prompt::class);
+    }
+
+    public function knowledgeCollections(): HasMany
+    {
+        return $this->hasMany(KnowledgeCollection::class);
     }
 }

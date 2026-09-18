@@ -24,6 +24,7 @@ const apiConfigured = ref(true)
 const conversations = ref([])
 const activeConversation = ref(null)
 const loadingConversations = ref(false)
+const knowledgeCollections = ref([])
 const searchTerm = ref('')
 
 async function loadModels() {
@@ -85,9 +86,15 @@ function onConversationCreated(conversation) {
     activeConversation.value = conversation
 }
 
+async function loadKnowledgeCollections() {
+    const res = await fetch('/api/knowledge')
+    knowledgeCollections.value = await res.json()
+}
+
 onMounted(() => {
     loadModels()
     loadConversations()
+    loadKnowledgeCollections()
 })
 </script>
 
@@ -120,6 +127,7 @@ onMounted(() => {
             @delete="deleteConversation"
             @pin="onConversationPinned"
             @toggle="sidebarOpen = !sidebarOpen"
+            @home="activeConversation = null"
         />
 
         <ChatWindow
@@ -127,6 +135,7 @@ onMounted(() => {
             :model-list="models"
             :api-configured="apiConfigured"
             :search-term="searchTerm"
+            :collections="knowledgeCollections"
             @conversation-updated="onConversationUpdated"
             @create-conversation="createConversation"
             @conversation-created="onConversationCreated"

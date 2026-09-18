@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Admin\AuditLogController;
+use App\Http\Controllers\KnowledgeController;
 use App\Http\Controllers\Admin\UserLimitController;
 use App\Http\Controllers\ConversationController;
 use App\Http\Controllers\ConversationShareController;
@@ -74,4 +75,16 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/admin/users', [UserLimitController::class, 'index']);
     Route::put('/admin/users/{user}/limits', [UserLimitController::class, 'updateLimits']);
     Route::post('/admin/users/{user}/reset-usage', [UserLimitController::class, 'resetUsage']);
+
+    // Base de Conhecimento
+    Route::get('/knowledge', function () {
+        return inertia('Knowledge/Index');
+    })->name('knowledge');
+
+    Route::get('/api/knowledge', [KnowledgeController::class, 'index']);
+    Route::post('/api/knowledge', [KnowledgeController::class, 'store']);
+    Route::delete('/api/knowledge/{collection}', [KnowledgeController::class, 'destroy']);
+    Route::get('/api/knowledge/{collection}/documents', [KnowledgeController::class, 'documents']);
+    Route::post('/api/knowledge/{collection}/documents', [KnowledgeController::class, 'uploadDocument']);
+    Route::delete('/api/knowledge/documents/{document}', [KnowledgeController::class, 'deleteDocument']);
 });

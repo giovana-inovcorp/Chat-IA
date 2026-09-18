@@ -40,4 +40,8 @@ return [
         'api_url' => env('OPENROUTER_API_URL', 'https://openrouter.ai/api/v1'),
     ],
 
+    'ollama' => [
+        'url' => env('OLLAMA_URL', 'http://localhost:11434'),
+    ],
+
 ];

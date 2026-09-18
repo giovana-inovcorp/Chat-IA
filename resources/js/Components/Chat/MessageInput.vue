@@ -16,6 +16,7 @@ const props = defineProps({
     initialContent: { type: String, default: '' },
     isHomepage: { type: Boolean, default: false },
     usageInfo: { type: Object, default: null },
+    collections: { type: Array, default: () => [] },
 })
 
 const emit = defineEmits(['send'])
@@ -32,6 +33,7 @@ const showConfig = ref(false)
 const showPromptLibrary = ref(false)
 const attachedFile = ref(null)
 const fileInput = ref(null)
+const selectedCollectionId = ref('')
 
 function onPromptSelect(text) {
     content.value = text
@@ -62,6 +64,7 @@ function submit() {
         temperature: temperature.value,
         maxTokens: maxTokens.value,
         file: attachedFile.value ?? null,
+        collection_id: selectedCollectionId.value || null,
     })
 
     content.value = ''
@@ -79,12 +82,22 @@ function onKeydown(e) {
 <template>
     <div :class="['p-4 shrink-0', isHomepage ? 'max-w-xl w-full mx-auto' : 'border-t border-border']">
 
-        <!-- Selector de modelo e config -->
+        <!-- Selector de modelo, coleção e config -->
         <div :class="['flex items-center gap-2 mb-3', isHomepage ? 'justify-center' : '']">
             <ModelSelector
                 v-model:modelId="model"
                 :modelList="modelList"
             />
+            <select
+                v-if="collections.length > 0"
+                v-model="selectedCollectionId"
+                class="text-xs h-8 px-2 rounded border border-input bg-background text-muted-foreground hover:border-ring transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+                <option value="">🗂️ Sem contexto</option>
+                <option v-for="collection in collections" :key="collection.id" :value="collection.id">
+                    🗂️ {{ collection.name }}
+                </option>
+            </select>
             <button
                 class="text-xs text-muted-foreground hover:text-foreground transition-colors"
                 @click="showConfig = !showConfig"

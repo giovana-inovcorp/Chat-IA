@@ -10,7 +10,7 @@ const props = defineProps({
     open: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['select', 'create', 'delete', 'pin', 'toggle'])
+const emit = defineEmits(['select', 'create', 'delete', 'pin', 'toggle', 'home'])
 
 const search = ref('')
 const confirmDeleteId = ref(null)
@@ -95,7 +95,7 @@ function logout() {
             <!-- Header -->
             <div class="p-4 border-b border-border">
                 <div class="flex items-center justify-between mb-3">
-                    <h1 class="text-lg font-semibold">Chat IA</h1>
+                    <button class="text-lg font-semibold hover:opacity-70 transition-opacity" @click="emit('home')">Chat IA</button>
                     <button
                         class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
                         @click="emit('toggle')"
@@ -208,6 +208,11 @@ function logout() {
                 <p class="text-[10px] uppercase tracking-wide text-muted-foreground px-3 pt-2">Administração</p>
                 <a href="/admin" class="block text-xs px-3 py-2 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">🗂️ Logs de Auditoria</a>
                 <a href="/admin/usage-limits" class="block text-xs px-3 py-2 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">🔒 Limites de Uso</a>
+            </div>
+
+            <!-- Knowledge base link -->
+            <div class="border-t border-border">
+                <a href="/knowledge" class="block text-xs px-3 py-2 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">📚 Base de Conhecimento</a>
             </div>
 
             <!-- User menu -->

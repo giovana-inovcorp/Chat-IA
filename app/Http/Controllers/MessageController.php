@@ -25,6 +25,7 @@ class MessageController extends Controller
             'temperature' => ['sometimes', 'numeric', 'min:0', 'max:2'],
             'max_tokens'  => ['sometimes', 'integer', 'min:1', 'max:8192'],
             'file'        => ['sometimes', 'file', 'max:5120', 'mimes:txt,md,pdf,js,ts,php,py,html,css,json,xml,csv'],
+            'collection_id' => ['sometimes', 'nullable', 'integer', 'exists:knowledge_collections,id'],
         ]);
 
         // Verifica se a API key está configurada
@@ -35,7 +36,7 @@ class MessageController extends Controller
         // Verifica e reinicia contadores de uso mensais se necessário
         $user = auth()->user();
         $now = now();
-        if (is_null($user->usage_reset_at) || $now->month !== $user->usage_reset_at->month || $now->year !== $user->usage_reset_at->year) {
+        if (is_null($user->usage_reset_at) || $now->month !== \Carbon\Carbon::parse($user->usage_reset_at)->month || $now->year !== \Carbon\Carbon::parse($user->usage_reset_at)->year) {
             $user->tokens_used_this_month = 0;
             $user->cost_used_this_month   = 0;
             $user->usage_reset_at         = $now;
@@ -114,6 +115,21 @@ class MessageController extends Controller
             ])
             ->toArray();
 
+        // RAG: injeta contexto da base de conhecimento se uma coleção foi selecionada
+        $ragResults = [];
+        if (!empty($validated['collection_id'])) {
+            $ragService = app(\App\Services\RagService::class);
+            $ragResults = $ragService->search($validated['content'], $validated['collection_id'], 5);
+            if (!empty($ragResults)) {
+                $context = "Contexto relevante da base de conhecimento:\n\n";
+                foreach ($ragResults as $result) {
+                    $context .= "--- Fonte: {$result['document_name']} ---\n{$result['content']}\n\n";
+                }
+                $context .= "---\n\nCom base no contexto acima, responde à seguinte pergunta:\n\n";
+                $history[count($history)-1]['content'] = $context . $history[count($history)-1]['content'];
+            }
+        }
+
         $model       = $validated['model'];
         $temperature = $validated['temperature'] ?? 0.7;
         $maxTokens   = $validated['max_tokens'] ?? 1024;
@@ -130,7 +146,7 @@ class MessageController extends Controller
 
         // Devolve uma resposta em streaming (SSE)
         return response()->stream(function () use (
-            $openRouter, $history, $model, $temperature, $maxTokens, $assistantMessage, $conversation, $user
+            $openRouter, $history, $model, $temperature, $maxTokens, $assistantMessage, $conversation, $user, $ragResults
         ) {
             $fullContent = '';
 
@@ -183,6 +199,13 @@ class MessageController extends Controller
                             echo "data: [DONE]\n\n";
                             ob_flush();
                             flush();
+
+                            if (!empty($ragResults)) {
+                                echo "data: " . json_encode(['references' => $ragResults]) . "\n\n";
+                                ob_flush();
+                                flush();
+                            }
+
                             break;
                         }
 

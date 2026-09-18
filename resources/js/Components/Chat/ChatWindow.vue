@@ -8,6 +8,7 @@ const props = defineProps({
     modelList: { type: Array, default: () => [] },
     apiConfigured: { type: Boolean, default: true },
     searchTerm: { type: String, default: '' },
+    collections: { type: Array, default: () => [] },
 })
 
 const emit = defineEmits(['conversation-updated', 'create-conversation', 'conversation-created'])
@@ -34,6 +35,7 @@ const warningLevel = computed(() => {
 const messagesContainer = ref(null)
 const messages = ref([])
 const isStreaming = ref(false)
+const references = ref([])
 const conversationTitle = ref('')
 const showExportMenu = ref(false)
 const showSharePanel = ref(false)
@@ -134,7 +136,7 @@ async function scrollToBottom() {
     }
 }
 
-async function sendMessage({ content, model, temperature, maxTokens, file }) {
+async function sendMessage({ content, model, temperature, maxTokens, file, collection_id }) {
     let conversation = props.conversation
 
     if (!conversation) {
@@ -148,6 +150,7 @@ async function sendMessage({ content, model, temperature, maxTokens, file }) {
     }
 
     const isFirstMessage = messages.value.length === 0
+    references.value = []
 
     // Adiciona mensagem do utilizador
     messages.value.push({ role: 'user', content })
@@ -168,10 +171,11 @@ async function sendMessage({ content, model, temperature, maxTokens, file }) {
             formData.append('temperature', temperature)
             formData.append('max_tokens', maxTokens)
             formData.append('file', file)
+            if (collection_id) formData.append('collection_id', collection_id)
             body = formData
             headers = { 'X-CSRF-TOKEN': csrf }
         } else {
-            body = JSON.stringify({ content, model, temperature, max_tokens: maxTokens })
+            body = JSON.stringify({ content, model, temperature, max_tokens: maxTokens, collection_id })
             headers = { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf }
         }
 
@@ -193,8 +197,9 @@ async function sendMessage({ content, model, temperature, maxTokens, file }) {
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
+        let streamDone = false
 
-        while (true) {
+        while (!streamDone) {
             const { done, value } = await reader.read()
             if (done) break
 
@@ -219,7 +224,8 @@ async function sendMessage({ content, model, temperature, maxTokens, file }) {
                             title: updatedConversation.title,
                         })
                     }
-                    break
+                    streamDone = true
+                    continue
                 }
 
                 try {
@@ -233,6 +239,9 @@ async function sendMessage({ content, model, temperature, maxTokens, file }) {
                     }
                     if (parsed.usage) {
                         usageInfo.value = parsed.usage
+                    }
+                    if (parsed.references) {
+                        references.value = parsed.references
                     }
                 } catch (e) {
                     // ignora linhas malformadas
@@ -272,6 +281,7 @@ async function sendMessage({ content, model, temperature, maxTokens, file }) {
                 :api-configured="apiConfigured"
                 :initial-content="pendingPrompt"
                 :is-homepage="true"
+                :collections="collections"
                 @send="sendMessage"
             />
         </div>
@@ -387,6 +397,14 @@ async function sendMessage({ content, model, temperature, maxTokens, file }) {
 
             </div>
 
+            <!-- Fontes RAG -->
+            <div v-if="references.length > 0" class="px-6 pb-3 text-xs text-muted-foreground">
+                <p class="font-medium mb-1">Fontes utilizadas:</p>
+                <ul>
+                    <li v-for="ref in references" :key="ref.id">📄 {{ ref.document_name }} (relevância: {{ (ref.similarity * 100).toFixed(0) }}%)</li>
+                </ul>
+            </div>
+
             <div v-if="isStreaming" class="px-6 pb-2 flex items-center gap-1 text-muted-foreground text-sm">
                 A escrever<span class="animate-ping inline-block w-1 h-1 rounded-full bg-muted-foreground ml-1 mb-0.5" />
             </div>
@@ -396,6 +414,7 @@ async function sendMessage({ content, model, temperature, maxTokens, file }) {
                 :model-list="modelList"
                 :api-configured="apiConfigured"
                 :usage-info="{ ...usageInfo, warningLevel: warningLevel }"
+                :collections="collections"
                 @send="sendMessage"
             />
         </template>
