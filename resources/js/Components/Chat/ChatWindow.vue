@@ -258,6 +258,12 @@ async function sendMessage({ content, model, temperature, maxTokens, file, colle
         isStreaming.value = false
     }
 }
+
+function excerpt(text, length = 160) {
+    if (!text) return ''
+    const clean = text.replace(/\s+/g, ' ').trim()
+    return clean.length > length ? clean.slice(0, length) + '…' : clean
+}
 </script>
 
 <template>
@@ -400,8 +406,11 @@ async function sendMessage({ content, model, temperature, maxTokens, file, colle
             <!-- Fontes RAG -->
             <div v-if="references.length > 0" class="px-6 pb-3 text-xs text-muted-foreground">
                 <p class="font-medium mb-1">Fontes utilizadas:</p>
-                <ul>
-                    <li v-for="ref in references" :key="ref.id">📄 {{ ref.document_name }} (relevância: {{ (ref.similarity * 100).toFixed(0) }}%)</li>
+                <ul class="space-y-1.5">
+                    <li v-for="ref in references" :key="ref.id">
+                        <div>📄 {{ ref.document_name }} (relevância: {{ (ref.similarity * 100).toFixed(0) }}%)</div>
+                        <p class="pl-5 italic text-muted-foreground/80">"{{ excerpt(ref.content) }}"</p>
+                    </li>
                 </ul>
             </div>
 

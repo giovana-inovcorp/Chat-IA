@@ -13,6 +13,10 @@ const documents = ref([])
 const uploadFile = ref(null)
 const selectedFile = ref(null)
 const uploading = ref(false)
+const searchQuery = ref('')
+const searchResults = ref([])
+const searching = ref(false)
+const searched = ref(false)
 let pollInterval = null
 
 function onFileChange(event) {
@@ -56,8 +60,25 @@ async function deleteCollection(collection) {
 
 async function openDocuments(collection) {
     selectedCollection.value = collection
+    searchQuery.value = ''
+    searchResults.value = []
+    searched.value = false
     await fetchDocuments()
     startPolling()
+}
+
+async function searchKnowledge() {
+    if (!selectedCollection.value || !searchQuery.value.trim()) return
+    searching.value = true
+    const res = await fetch(`/api/knowledge/${selectedCollection.value.id}/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf() },
+        body: JSON.stringify({ query: searchQuery.value }),
+    })
+    const data = await res.json()
+    searchResults.value = data.results ?? []
+    searched.value = true
+    searching.value = false
 }
 
 async function fetchDocuments() {
@@ -111,6 +132,17 @@ async function deleteDocument(doc) {
     if (col) col.documents_count = documents.value.length
 }
 
+async function reprocessDocument(doc) {
+    const res = await fetch(`/api/knowledge/documents/${doc.id}/reprocess`, {
+        method: 'POST',
+        headers: { 'X-CSRF-TOKEN': csrf() },
+    })
+    const updated = await res.json()
+    const idx = documents.value.findIndex(d => d.id === doc.id)
+    if (idx !== -1) documents.value[idx] = { ...documents.value[idx], ...updated }
+    startPolling()
+}
+
 const statusClass = {
     pending:    'bg-yellow-100 text-yellow-800',
     processing: 'bg-blue-100 text-blue-800',
@@ -123,6 +155,31 @@ const statusLabel = {
     processing: 'A processar',
     ready:      'Pronto',
     error:      'Erro',
+}
+
+const collectionStatusClass = {
+    empty:      'bg-gray-100 text-gray-600',
+    processing: 'bg-blue-100 text-blue-800',
+    ready:      'bg-green-100 text-green-800',
+    error:      'bg-red-100 text-red-800',
+}
+const collectionStatusLabel = {
+    empty:      'Vazia',
+    processing: 'A processar',
+    ready:      'Pronta',
+    error:      'Com erros',
+}
+
+function formatFileSize(bytes) {
+    if (!bytes) return '—'
+    const units = ['B', 'KB', 'MB', 'GB']
+    let size = bytes
+    let unitIndex = 0
+    while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024
+        unitIndex++
+    }
+    return `${size.toFixed(size < 10 && unitIndex > 0 ? 1 : 0)} ${units[unitIndex]}`
 }
 
 onMounted(fetchCollections)
@@ -187,6 +244,9 @@ onUnmounted(stopPolling)
                             <div class="flex items-center gap-2">
                                 <span class="font-medium text-sm">{{ collection.name }}</span>
                                 <span class="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full">{{ collection.documents_count }} doc{{ collection.documents_count !== 1 ? 's' : '' }}</span>
+                                <span :class="['text-xs px-2 py-0.5 rounded-full font-medium', collectionStatusClass[collection.status]]">
+                                    {{ collectionStatusLabel[collection.status] }}
+                                </span>
                             </div>
                             <p v-if="collection.description" class="text-xs text-muted-foreground mt-1 truncate">{{ collection.description }}</p>
                         </div>
@@ -209,6 +269,34 @@ onUnmounted(stopPolling)
                     <!-- Documents panel -->
                     <div v-if="selectedCollection?.id === collection.id" class="border border-t-0 border-border rounded-b-lg bg-muted/10 p-4">
                         <h3 class="text-sm font-semibold mb-4">{{ collection.name }} — Documentos</h3>
+
+                        <!-- Pesquisa semântica -->
+                        <div class="flex items-center gap-2 mb-5">
+                            <input
+                                v-model="searchQuery"
+                                @keyup.enter="searchKnowledge"
+                                placeholder="Pesquisar nesta coleção..."
+                                class="flex-1 px-3 py-2 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                            />
+                            <button
+                                :disabled="searching || !searchQuery.trim()"
+                                @click="searchKnowledge"
+                                class="text-xs px-3 py-2 rounded-md border border-border hover:bg-muted disabled:opacity-50 transition-colors shrink-0"
+                            >
+                                {{ searching ? 'A pesquisar...' : 'Pesquisar' }}
+                            </button>
+                        </div>
+
+                        <div v-if="searchResults.length > 0" class="mb-5 space-y-2">
+                            <p class="text-xs font-medium text-muted-foreground">Resultados:</p>
+                            <div v-for="result in searchResults" :key="result.id" class="text-xs border border-border/50 rounded-md p-2">
+                                <p class="font-medium">{{ result.document_name }} <span class="text-muted-foreground">({{ (result.similarity * 100).toFixed(0) }}%)</span></p>
+                                <p class="text-muted-foreground italic mt-1">"{{ result.content.length > 200 ? result.content.slice(0, 200) + '…' : result.content }}"</p>
+                            </div>
+                        </div>
+                        <div v-else-if="searched && !searching" class="mb-5 text-xs text-muted-foreground">
+                            Nenhum resultado encontrado.
+                        </div>
 
                         <!-- Upload -->
                         <div class="flex items-center gap-3 mb-5">
@@ -236,12 +324,19 @@ onUnmounted(stopPolling)
                         <div v-for="doc in documents" :key="doc.id" class="flex items-center justify-between py-2 border-b border-border/50 last:border-0 gap-3">
                             <div class="flex-1 min-w-0">
                                 <p class="text-sm truncate">{{ doc.original_name }}</p>
-                                <p class="text-xs text-muted-foreground">{{ doc.segments_count ?? 0 }} segmentos</p>
+                                <p class="text-xs text-muted-foreground">{{ doc.segments_count ?? 0 }} segmentos · {{ formatFileSize(doc.file_size) }}</p>
                             </div>
                             <div class="flex items-center gap-2 shrink-0">
                                 <span :class="['text-xs px-2 py-0.5 rounded-full font-medium', statusClass[doc.status]]">
                                     {{ statusLabel[doc.status] }}
                                 </span>
+                                <button
+                                    v-if="doc.status === 'error'"
+                                    @click="reprocessDocument(doc)"
+                                    class="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                                >
+                                    Reprocessar
+                                </button>
                                 <button
                                     @click="deleteDocument(doc)"
                                     class="text-xs text-muted-foreground hover:text-destructive transition-colors"

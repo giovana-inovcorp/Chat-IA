@@ -87,4 +87,6 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/api/knowledge/{collection}/documents', [KnowledgeController::class, 'documents']);
     Route::post('/api/knowledge/{collection}/documents', [KnowledgeController::class, 'uploadDocument']);
     Route::delete('/api/knowledge/documents/{document}', [KnowledgeController::class, 'deleteDocument']);
+    Route::post('/api/knowledge/documents/{document}/reprocess', [KnowledgeController::class, 'reprocessDocument']);
+    Route::post('/api/knowledge/{collection}/search', [KnowledgeController::class, 'search']);
 });

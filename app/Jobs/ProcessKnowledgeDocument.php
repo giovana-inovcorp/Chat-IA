@@ -41,10 +41,12 @@ class ProcessKnowledgeDocument implements ShouldQueue
 
             $this->document->status = 'ready';
             $this->document->save();
+            $this->document->collection->refreshStatus();
         } catch (\Throwable $e) {
             $this->document->status = 'error';
             $this->document->error_message = $e->getMessage();
             $this->document->save();
+            $this->document->collection->refreshStatus();
 
             throw $e;
         }

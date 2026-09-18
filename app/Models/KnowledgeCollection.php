@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class KnowledgeCollection extends Model
 {
-    protected $fillable = ['user_id', 'name', 'description'];
+    protected $fillable = ['user_id', 'name', 'description', 'status'];
 
     public function user(): BelongsTo
     {
@@ -18,5 +18,19 @@ class KnowledgeCollection extends Model
     public function documents(): HasMany
     {
         return $this->hasMany(KnowledgeDocument::class, 'collection_id');
+    }
+
+    public function refreshStatus(): void
+    {
+        $statuses = $this->documents()->pluck('status');
+
+        $status = match (true) {
+            $statuses->isEmpty() => 'empty',
+            $statuses->intersect(['pending', 'processing'])->isNotEmpty() => 'processing',
+            $statuses->contains('error') => 'error',
+            default => 'ready',
+        };
+
+        $this->update(['status' => $status]);
     }
 }

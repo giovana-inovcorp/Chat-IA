@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class KnowledgeDocument extends Model
 {
-    protected $fillable = ['collection_id', 'filename', 'original_name', 'mime_type', 'status', 'error_message'];
+    protected $fillable = ['collection_id', 'filename', 'original_name', 'mime_type', 'file_size', 'status', 'error_message'];
 
     public function collection(): BelongsTo
     {
