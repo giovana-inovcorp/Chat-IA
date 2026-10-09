@@ -48,18 +48,24 @@ class OpenRouterService
      * Envia uma conversa para o modelo e recebe a resposta em streaming.
      * Retorna a resposta HTTP "crua" para ser processada como stream no controller.
      */
-    public function streamChat(array $messages, string $model, float $temperature = 0.7, int $maxTokens = 1024)
+    public function streamChat(array $messages, string $model, float $temperature = 0.7, int $maxTokens = 1024, array $tools = [])
     {
+        $payload = [
+            'model' => $model,
+            'messages' => $messages,
+            'temperature' => $temperature,
+            'max_tokens' => $maxTokens,
+            'stream' => true,
+        ];
+
+        if (!empty($tools)) {
+            $payload['tools'] = $tools;
+        }
+
         return Http::withToken($this->apiKey)
             ->withOptions(['stream' => true])
             ->timeout(120)
-            ->post("{$this->apiUrl}/chat/completions", [
-                'model' => $model,
-                'messages' => $messages,
-                'temperature' => $temperature,
-                'max_tokens' => $maxTokens,
-                'stream' => true,
-            ]);
+            ->post("{$this->apiUrl}/chat/completions", $payload);
     }
 
     /**

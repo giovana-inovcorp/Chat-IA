@@ -24,19 +24,33 @@ class ProcessKnowledgeDocument implements ShouldQueue
 
         try {
             $fileContent = Storage::get($this->document->filename);
-            $text = $this->extractText($fileContent, $this->document->mime_type);
-            $chunks = $this->splitIntoSegments($text);
+            $pages = $this->extractPages($fileContent, $this->document->mime_type);
 
-            foreach ($chunks as $position => $chunk) {
-                $segment = KnowledgeSegment::create([
-                    'document_id' => $this->document->id,
-                    'content'     => $chunk,
-                    'position'    => $position,
-                ]);
+            $position = 0;
 
-                $embedding = $embeddingService->embed($chunk);
+            foreach ($pages as $pageData) {
+                $pageText = $this->cleanText($pageData['text']);
 
-                $segment->update(['embedding' => json_encode($embedding)]);
+                if ($pageText === '') {
+                    continue;
+                }
+
+                $chunks = $this->splitIntoSegments($pageText);
+
+                foreach ($chunks as $chunk) {
+                    $segment = KnowledgeSegment::create([
+                        'document_id' => $this->document->id,
+                        'content'     => $chunk,
+                        'page'        => $pageData['page'],
+                        'position'    => $position,
+                    ]);
+
+                    $embedding = $embeddingService->embed($chunk);
+
+                    $segment->update(['embedding' => json_encode($embedding)]);
+
+                    $position++;
+                }
             }
 
             $this->document->status = 'ready';
@@ -52,15 +66,23 @@ class ProcessKnowledgeDocument implements ShouldQueue
         }
     }
 
-    private function extractText(string $content, string $mimeType): string
+    private function extractPages(string $content, string $mimeType): array
     {
         return match (true) {
-            in_array($mimeType, ['text/plain', 'text/markdown']) => $content,
+            in_array($mimeType, ['text/plain', 'text/markdown']) => [
+                ['page' => null, 'text' => $content],
+            ],
 
             $mimeType === 'application/pdf' => (function () use ($content) {
                 $parser = new \Smalot\PdfParser\Parser();
                 $pdf = $parser->parseContent($content);
-                return $pdf->getText();
+
+                $pages = [];
+                foreach ($pdf->getPages() as $index => $page) {
+                    $pages[] = ['page' => $index + 1, 'text' => $page->getText()];
+                }
+
+                return $pages;
             })(),
 
             $mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => (function () use ($content) {
@@ -84,11 +106,29 @@ class ProcessKnowledgeDocument implements ShouldQueue
                         }
                     }
                 }
-                return $text;
+
+                return [['page' => null, 'text' => $text]];
             })(),
 
             default => throw new \RuntimeException("Unsupported mime type: {$mimeType}"),
         };
+    }
+
+    private function cleanText(string $text): string
+    {
+        // Normaliza quebras de linha
+        $text = str_replace(["\r\n", "\r"], "\n", $text);
+
+        // Remove caracteres de controlo (exceto \n e \t)
+        $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $text);
+
+        // Colapsa espaços e tabs repetidos
+        $text = preg_replace('/[ \t]+/', ' ', $text);
+
+        // Colapsa 3 ou mais linhas em branco seguidas para no máximo 1 linha em branco
+        $text = preg_replace('/\n{3,}/', "\n\n", $text);
+
+        return trim($text);
     }
 
     private function splitIntoSegments(string $text, int $chunkWords = 500, int $overlapWords = 50): array

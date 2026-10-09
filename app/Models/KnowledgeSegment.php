@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class KnowledgeSegment extends Model
 {
-    protected $fillable = ['document_id', 'content', 'embedding', 'position'];
+    protected $fillable = ['document_id', 'content', 'embedding', 'position', 'page'];
 
     public function document(): BelongsTo
     {

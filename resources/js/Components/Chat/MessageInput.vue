@@ -33,7 +33,8 @@ const showConfig = ref(false)
 const showPromptLibrary = ref(false)
 const attachedFile = ref(null)
 const fileInput = ref(null)
-const selectedCollectionId = ref('')
+const selectedCollectionIds = ref([])
+const showCollectionMenu = ref(false)
 
 function onPromptSelect(text) {
     content.value = text
@@ -64,7 +65,7 @@ function submit() {
         temperature: temperature.value,
         maxTokens: maxTokens.value,
         file: attachedFile.value ?? null,
-        collection_id: selectedCollectionId.value || null,
+        collection_ids: selectedCollectionIds.value.length > 0 ? selectedCollectionIds.value : null,
     })
 
     content.value = ''
@@ -88,16 +89,28 @@ function onKeydown(e) {
                 v-model:modelId="model"
                 :modelList="modelList"
             />
-            <select
-                v-if="collections.length > 0"
-                v-model="selectedCollectionId"
-                class="text-xs h-8 px-2 rounded border border-input bg-background text-muted-foreground hover:border-ring transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-                <option value="">🗂️ Sem contexto</option>
-                <option v-for="collection in collections" :key="collection.id" :value="collection.id">
-                    🗂️ {{ collection.name }}
-                </option>
-            </select>
+            <div v-if="collections.length > 0" class="relative">
+                <button
+                    type="button"
+                    @click="showCollectionMenu = !showCollectionMenu"
+                    class="text-xs h-8 px-2 rounded border border-input bg-background text-muted-foreground hover:border-ring transition-colors flex items-center gap-1"
+                >
+                    🗂️ {{ selectedCollectionIds.length === 0 ? 'Sem contexto' : `${selectedCollectionIds.length} coleção${selectedCollectionIds.length !== 1 ? 'ões' : ''}` }}
+                </button>
+                <div
+                    v-if="showCollectionMenu"
+                    class="absolute bottom-full mb-1 left-0 z-10 w-56 rounded-md border border-border bg-background shadow-md p-2 text-xs max-h-48 overflow-y-auto"
+                >
+                    <label
+                        v-for="collection in collections"
+                        :key="collection.id"
+                        class="flex items-center gap-2 py-1 cursor-pointer hover:bg-muted rounded px-1"
+                    >
+                        <input type="checkbox" :value="collection.id" v-model="selectedCollectionIds" />
+                        {{ collection.name }}
+                    </label>
+                </div>
+            </div>
             <button
                 class="text-xs text-muted-foreground hover:text-foreground transition-colors"
                 @click="showConfig = !showConfig"

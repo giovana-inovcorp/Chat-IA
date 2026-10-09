@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\AuditLog;
 use App\Models\Conversation;
+use App\Models\KnowledgeCollection;
 use App\Models\Message;
 use App\Services\OpenRouterService;
 use Illuminate\Http\Request;
@@ -11,7 +12,7 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class MessageController extends Controller
 {
-    public function store(Request $request, Conversation $conversation, OpenRouterService $openRouter)
+    public function store(Request $request, Conversation $conversation, OpenRouterService $openRouter, \App\Services\ToolRegistry $toolRegistry)
     {
         // Verifica que a conversa pertence ao utilizador autenticado
         if ($conversation->user_id !== auth()->id()) {
@@ -24,13 +25,25 @@ class MessageController extends Controller
             'model'       => ['required', 'string'],
             'temperature' => ['sometimes', 'numeric', 'min:0', 'max:2'],
             'max_tokens'  => ['sometimes', 'integer', 'min:1', 'max:8192'],
-            'file'        => ['sometimes', 'file', 'max:5120', 'mimes:txt,md,pdf,js,ts,php,py,html,css,json,xml,csv'],
-            'collection_id' => ['sometimes', 'nullable', 'integer', 'exists:knowledge_collections,id'],
+            'file'        => ['sometimes', 'file', 'max:5120', 'extensions:txt,md,pdf,js,ts,php,py,html,css,json,xml,csv'],
+            'collection_ids'   => ['sometimes', 'nullable', 'array'],
+            'collection_ids.*' => ['integer', 'exists:knowledge_collections,id'],
         ]);
 
         // Verifica se a API key está configurada
         if (! $openRouter->isConfigured()) {
             return response()->json(['error' => 'A chave de API do OpenRouter não está configurada.'], 500);
+        }
+
+        // Garante que todas as coleções pedidas pertencem ao utilizador autenticado
+        if (!empty($validated['collection_ids'])) {
+            $ownedCount = KnowledgeCollection::whereIn('id', $validated['collection_ids'])
+                ->where('user_id', auth()->id())
+                ->count();
+
+            if ($ownedCount !== count($validated['collection_ids'])) {
+                abort(403);
+            }
         }
 
         // Verifica e reinicia contadores de uso mensais se necessário
@@ -117,9 +130,9 @@ class MessageController extends Controller
 
         // RAG: injeta contexto da base de conhecimento se uma coleção foi selecionada
         $ragResults = [];
-        if (!empty($validated['collection_id'])) {
+        if (!empty($validated['collection_ids'])) {
             $ragService = app(\App\Services\RagService::class);
-            $ragResults = $ragService->search($validated['content'], $validated['collection_id'], 5);
+            $ragResults = $ragService->search($validated['content'], $validated['collection_ids'], 5);
             if (!empty($ragResults)) {
                 $context = "Contexto relevante da base de conhecimento:\n\n";
                 foreach ($ragResults as $result) {
@@ -134,6 +147,16 @@ class MessageController extends Controller
         $temperature = $validated['temperature'] ?? 0.7;
         $maxTokens   = $validated['max_tokens'] ?? 1024;
 
+        $tools = $toolRegistry->schemas();
+
+        // Instrui o modelo a usar as ferramentas diretamente em vez de pedir confirmação em texto
+        if (!empty($tools)) {
+            array_unshift($history, [
+                'role'    => 'system',
+                'content' => 'Tens acesso a ferramentas (funções) para executar ações concretas: cálculos, pesquisa de utilizadores, consulta de uso, criação de notas e pesquisa na base de conhecimento. Quando o pedido do utilizador corresponder claramente a uma dessas ações, chama a função apropriada diretamente — não perguntes permissão em texto nem descrevas antes o que vais fazer. Ações de escrita (como criar uma nota) já passam por um passo de confirmação humana feito pelo sistema antes de serem executadas, por isso não precisas de pedir essa confirmação tu próprio. Só respondes em texto normal quando nenhuma ferramenta for adequada ao pedido.',
+            ]);
+        }
+
         // Cria a mensagem do assistente já no banco (sem conteúdo ainda)
         $assistantMessage = $conversation->messages()->create([
             'role'    => 'assistant',
@@ -146,80 +169,52 @@ class MessageController extends Controller
 
         // Devolve uma resposta em streaming (SSE)
         return response()->stream(function () use (
-            $openRouter, $history, $model, $temperature, $maxTokens, $assistantMessage, $conversation, $user, $ragResults
+            $openRouter, $history, $model, $temperature, $maxTokens, $assistantMessage, $conversation, $user, $ragResults, $toolRegistry, $tools
         ) {
             $fullContent = '';
 
-            $response = $openRouter->streamChat($history, $model, $temperature, $maxTokens);
-
-            $body = $response->getBody();
-
             try {
-                while (! $body->eof()) {
-                    $line = trim($this->readLine($body));
+                $this->runToolLoop($history, $model, $temperature, $maxTokens, $tools, $openRouter, $toolRegistry, $assistantMessage, $conversation, $user, $fullContent);
 
-                    if (str_starts_with($line, 'data: ')) {
-                        $data = substr($line, 6);
+                $assistantMessage->update(['content' => $fullContent]);
 
-                        if ($data === '[DONE]') {
-                            // Guarda o conteúdo completo no banco
-                            $assistantMessage->update(['content' => $fullContent]);
+                $inputTokens = (int)(mb_strlen(collect($history)->pluck('content')->join(' ')) / 4);
+                $outputTokens = (int)(mb_strlen($fullContent) / 4);
 
-                            // Estima tokens (aproximação: 1 token ≈ 4 chars)
-                            $inputTokens = (int)(mb_strlen(collect($history)->pluck('content')->join(' ')) / 4);
-                            $outputTokens = (int)(mb_strlen($fullContent) / 4);
+                $costPer1kInput = 0.00015;
+                $costPer1kOutput = 0.0006;
+                $costUsd = (($inputTokens / 1000) * $costPer1kInput) + (($outputTokens / 1000) * $costPer1kOutput);
 
-                            // Custo estimado (valores médios por modelo)
-                            $costPer1kInput = 0.00015;
-                            $costPer1kOutput = 0.0006;
-                            $costUsd = (($inputTokens / 1000) * $costPer1kInput) + (($outputTokens / 1000) * $costPer1kOutput);
+                \App\Models\AuditLog::create([
+                    'message_id'    => $assistantMessage->id,
+                    'user_id'       => $conversation->user_id,
+                    'model'         => $model,
+                    'input_tokens'  => $inputTokens,
+                    'output_tokens' => $outputTokens,
+                    'cost_usd'      => round($costUsd, 8),
+                ]);
 
-                            AuditLog::create([
-                                'message_id'    => $assistantMessage->id,
-                                'user_id'       => $conversation->user_id,
-                                'model'         => $model,
-                                'input_tokens'  => $inputTokens,
-                                'output_tokens' => $outputTokens,
-                                'cost_usd'      => round($costUsd, 8),
-                            ]);
+                $user->increment('tokens_used_this_month', $inputTokens + $outputTokens);
+                $user->increment('cost_used_this_month', round($costUsd, 6));
 
-                            $user->increment('tokens_used_this_month', $inputTokens + $outputTokens);
-                            $user->increment('cost_used_this_month', round($costUsd, 6));
+                $usageData = [
+                    'tokens_used' => $user->fresh()->tokens_used_this_month,
+                    'token_limit' => $user->monthly_token_limit,
+                    'cost_used'   => $user->fresh()->cost_used_this_month,
+                    'cost_limit'  => $user->monthly_cost_limit_usd,
+                ];
+                echo "data: " . json_encode(['usage' => $usageData]) . "\n\n";
+                ob_flush();
+                flush();
 
-                            $usageData = [
-                                'tokens_used' => $user->fresh()->tokens_used_this_month,
-                                'token_limit' => $user->monthly_token_limit,
-                                'cost_used'   => $user->fresh()->cost_used_this_month,
-                                'cost_limit'  => $user->monthly_cost_limit_usd,
-                            ];
-                            echo "data: " . json_encode(['usage' => $usageData]) . "\n\n";
-                            ob_flush();
-                            flush();
+                echo "data: [DONE]\n\n";
+                ob_flush();
+                flush();
 
-                            echo "data: [DONE]\n\n";
-                            ob_flush();
-                            flush();
-
-                            if (!empty($ragResults)) {
-                                echo "data: " . json_encode(['references' => $ragResults]) . "\n\n";
-                                ob_flush();
-                                flush();
-                            }
-
-                            break;
-                        }
-
-                        $decoded = json_decode($data, true);
-                        $chunk   = $decoded['choices'][0]['delta']['content'] ?? '';
-
-                        if ($chunk !== '') {
-                            $fullContent .= $chunk;
-
-                            echo "data: " . json_encode(['chunk' => $chunk]) . "\n\n";
-                            ob_flush();
-                            flush();
-                        }
-                    }
+                if (!empty($ragResults)) {
+                    echo "data: " . json_encode(['references' => $ragResults]) . "\n\n";
+                    ob_flush();
+                    flush();
                 }
             } catch (\Throwable $e) {
                 \Log::error('Stream error: ' . $e->getMessage() . ' at line ' . $e->getLine());
@@ -229,6 +224,319 @@ class MessageController extends Controller
             'Cache-Control'     => 'no-cache',
             'X-Accel-Buffering' => 'no',
         ]);
+    }
+
+    public function confirmTool(Request $request, \App\Models\ToolExecution $toolExecution, OpenRouterService $openRouter, \App\Services\ToolRegistry $toolRegistry)
+    {
+        if ($toolExecution->user_id !== auth()->id()) {
+            abort(403);
+        }
+
+        if ($toolExecution->status !== 'a_aguardar_confirmacao') {
+            return response()->json(['error' => 'Esta ação já não está à espera de confirmação.'], 422);
+        }
+
+        $context     = $toolExecution->context;
+        $history     = $context['history'];
+        $model       = $context['model'];
+        $temperature = $context['temperature'];
+        $maxTokens   = $context['max_tokens'];
+        $toolCallId  = $context['tool_call_id'];
+
+        $conversation     = \App\Models\Conversation::findOrFail($toolExecution->conversation_id);
+        $assistantMessage = \App\Models\Message::findOrFail($toolExecution->message_id);
+        $user             = auth()->user();
+        $tool             = $toolRegistry->find($toolExecution->tool);
+        $tools            = $toolRegistry->schemas();
+
+        return response()->stream(function () use (
+            $openRouter, $history, $model, $temperature, $maxTokens, $assistantMessage,
+            $conversation, $user, $toolRegistry, $tools, $tool, $toolExecution, $toolCallId
+        ) {
+            $fullContent = '';
+
+            try {
+                $startedAt = microtime(true);
+
+                echo "data: " . json_encode(['tool_status' => 'a_executar', 'tool' => $toolExecution->tool]) . "\n\n";
+                ob_flush();
+                flush();
+
+                $finalStatus = 'concluido';
+
+                if (! $tool) {
+                    $toolExecution->update([
+                        'status' => 'erro',
+                        'error_message' => 'Ferramenta já não está registada.',
+                        'duration_ms' => (int) ((microtime(true) - $startedAt) * 1000),
+                    ]);
+                    $toolResultContent = json_encode(['error' => 'Ferramenta já não está registada.']);
+                    $finalStatus = 'erro';
+                } else {
+                    try {
+                        $result = $tool->execute($toolExecution->parameters, $user);
+                        $toolExecution->update([
+                            'status' => 'concluido',
+                            'result_summary' => json_encode($result),
+                            'duration_ms' => (int) ((microtime(true) - $startedAt) * 1000),
+                        ]);
+                        $toolResultContent = json_encode($result);
+                    } catch (\Throwable $e) {
+                        $toolExecution->update([
+                            'status' => 'erro',
+                            'error_message' => $e->getMessage(),
+                            'duration_ms' => (int) ((microtime(true) - $startedAt) * 1000),
+                        ]);
+                        $toolResultContent = json_encode(['error' => $e->getMessage()]);
+                        $finalStatus = 'erro';
+                    }
+                }
+
+                echo "data: " . json_encode(['tool_status' => $finalStatus, 'tool' => $toolExecution->tool, 'result' => json_decode($toolResultContent, true)]) . "\n\n";
+                ob_flush();
+                flush();
+
+                $history[] = ['role' => 'tool', 'tool_call_id' => $toolCallId, 'content' => $toolResultContent];
+
+                $this->runToolLoop($history, $model, $temperature, $maxTokens, $tools, $openRouter, $toolRegistry, $assistantMessage, $conversation, $user, $fullContent);
+
+                $assistantMessage->update(['content' => $fullContent]);
+
+                $inputTokens = (int)(mb_strlen(collect($history)->pluck('content')->join(' ')) / 4);
+                $outputTokens = (int)(mb_strlen($fullContent) / 4);
+
+                $costPer1kInput = 0.00015;
+                $costPer1kOutput = 0.0006;
+                $costUsd = (($inputTokens / 1000) * $costPer1kInput) + (($outputTokens / 1000) * $costPer1kOutput);
+
+                \App\Models\AuditLog::create([
+                    'message_id'    => $assistantMessage->id,
+                    'user_id'       => $conversation->user_id,
+                    'model'         => $model,
+                    'input_tokens'  => $inputTokens,
+                    'output_tokens' => $outputTokens,
+                    'cost_usd'      => round($costUsd, 8),
+                ]);
+
+                $user->increment('tokens_used_this_month', $inputTokens + $outputTokens);
+                $user->increment('cost_used_this_month', round($costUsd, 6));
+
+                $usageData = [
+                    'tokens_used' => $user->fresh()->tokens_used_this_month,
+                    'token_limit' => $user->monthly_token_limit,
+                    'cost_used'   => $user->fresh()->cost_used_this_month,
+                    'cost_limit'  => $user->monthly_cost_limit_usd,
+                ];
+                echo "data: " . json_encode(['usage' => $usageData]) . "\n\n";
+                ob_flush();
+                flush();
+
+                echo "data: [DONE]\n\n";
+                ob_flush();
+                flush();
+            } catch (\Throwable $e) {
+                \Log::error('Stream error (confirmTool): ' . $e->getMessage() . ' at line ' . $e->getLine());
+            }
+        }, 200, [
+            'Content-Type'      => 'text/event-stream',
+            'Cache-Control'     => 'no-cache',
+            'X-Accel-Buffering' => 'no',
+        ]);
+    }
+
+    public function rejectTool(Request $request, \App\Models\ToolExecution $toolExecution, OpenRouterService $openRouter, \App\Services\ToolRegistry $toolRegistry)
+    {
+        if ($toolExecution->user_id !== auth()->id()) {
+            abort(403);
+        }
+
+        if ($toolExecution->status !== 'a_aguardar_confirmacao') {
+            return response()->json(['error' => 'Esta ação já não está à espera de confirmação.'], 422);
+        }
+
+        $context     = $toolExecution->context;
+        $history     = $context['history'];
+        $model       = $context['model'];
+        $temperature = $context['temperature'];
+        $maxTokens   = $context['max_tokens'];
+        $toolCallId  = $context['tool_call_id'];
+
+        $conversation     = \App\Models\Conversation::findOrFail($toolExecution->conversation_id);
+        $assistantMessage = \App\Models\Message::findOrFail($toolExecution->message_id);
+        $user             = auth()->user();
+        $tools            = $toolRegistry->schemas();
+
+        $toolExecution->update(['status' => 'cancelado']);
+
+        return response()->stream(function () use (
+            $openRouter, $history, $model, $temperature, $maxTokens, $assistantMessage,
+            $conversation, $user, $toolRegistry, $tools, $toolCallId
+        ) {
+            $fullContent = '';
+
+            try {
+                $history[] = [
+                    'role' => 'tool',
+                    'tool_call_id' => $toolCallId,
+                    'content' => json_encode(['error' => 'O utilizador cancelou esta ação. Não a executes nem assumas que foi feita.']),
+                ];
+
+                $this->runToolLoop($history, $model, $temperature, $maxTokens, $tools, $openRouter, $toolRegistry, $assistantMessage, $conversation, $user, $fullContent);
+
+                $assistantMessage->update(['content' => $fullContent]);
+
+                $inputTokens = (int)(mb_strlen(collect($history)->pluck('content')->join(' ')) / 4);
+                $outputTokens = (int)(mb_strlen($fullContent) / 4);
+
+                $costPer1kInput = 0.00015;
+                $costPer1kOutput = 0.0006;
+                $costUsd = (($inputTokens / 1000) * $costPer1kInput) + (($outputTokens / 1000) * $costPer1kOutput);
+
+                \App\Models\AuditLog::create([
+                    'message_id'    => $assistantMessage->id,
+                    'user_id'       => $conversation->user_id,
+                    'model'         => $model,
+                    'input_tokens'  => $inputTokens,
+                    'output_tokens' => $outputTokens,
+                    'cost_usd'      => round($costUsd, 8),
+                ]);
+
+                $user->increment('tokens_used_this_month', $inputTokens + $outputTokens);
+                $user->increment('cost_used_this_month', round($costUsd, 6));
+
+                $usageData = [
+                    'tokens_used' => $user->fresh()->tokens_used_this_month,
+                    'token_limit' => $user->monthly_token_limit,
+                    'cost_used'   => $user->fresh()->cost_used_this_month,
+                    'cost_limit'  => $user->monthly_cost_limit_usd,
+                ];
+                echo "data: " . json_encode(['usage' => $usageData]) . "\n\n";
+                ob_flush();
+                flush();
+
+                echo "data: [DONE]\n\n";
+                ob_flush();
+                flush();
+            } catch (\Throwable $e) {
+                \Log::error('Stream error (rejectTool): ' . $e->getMessage() . ' at line ' . $e->getLine());
+            }
+        }, 200, [
+            'Content-Type'      => 'text/event-stream',
+            'Cache-Control'     => 'no-cache',
+            'X-Accel-Buffering' => 'no',
+        ]);
+    }
+
+    private function runToolLoop(
+        array &$history,
+        string $model,
+        float $temperature,
+        int $maxTokens,
+        array $tools,
+        OpenRouterService $openRouter,
+        \App\Services\ToolRegistry $toolRegistry,
+        \App\Models\Message $assistantMessage,
+        \App\Models\Conversation $conversation,
+        \App\Models\User $user,
+        string &$fullContent
+    ): bool {
+        $pendingConfirmation = false;
+        $maxIterations = 5;
+
+        for ($iteration = 0; $iteration < $maxIterations; $iteration++) {
+            $response = $openRouter->streamChat($history, $model, $temperature, $maxTokens, $tools);
+            $body = $response->getBody();
+
+            $toolCallsAccum = [];
+            $finishReason = null;
+
+            while (! $body->eof()) {
+                $line = trim($this->readLine($body));
+
+                if (! str_starts_with($line, 'data: ')) {
+                    continue;
+                }
+
+                $data = substr($line, 6);
+
+                if ($data === '[DONE]') {
+                    break;
+                }
+
+                $decoded = json_decode($data, true);
+                $delta   = $decoded['choices'][0]['delta'] ?? [];
+                $finishReason = $decoded['choices'][0]['finish_reason'] ?? $finishReason;
+
+                if (!empty($delta['content'])) {
+                    $fullContent .= $delta['content'];
+                    echo "data: " . json_encode(['chunk' => $delta['content']]) . "\n\n";
+                    ob_flush();
+                    flush();
+                }
+
+                if (!empty($delta['tool_calls'])) {
+                    foreach ($delta['tool_calls'] as $tc) {
+                        $idx = $tc['index'] ?? 0;
+                        $toolCallsAccum[$idx] ??= ['id' => null, 'name' => null, 'arguments' => ''];
+                        if (isset($tc['id'])) $toolCallsAccum[$idx]['id'] = $tc['id'];
+                        if (isset($tc['function']['name'])) $toolCallsAccum[$idx]['name'] = $tc['function']['name'];
+                        if (isset($tc['function']['arguments'])) $toolCallsAccum[$idx]['arguments'] .= $tc['function']['arguments'];
+                    }
+                }
+            }
+
+            if ($finishReason !== 'tool_calls' || empty($toolCallsAccum)) {
+                break;
+            }
+
+            $assistantToolCalls = [];
+            foreach ($toolCallsAccum as $tc) {
+                $assistantToolCalls[] = [
+                    'id' => $tc['id'],
+                    'type' => 'function',
+                    'function' => ['name' => $tc['name'], 'arguments' => $tc['arguments']],
+                ];
+            }
+            $history[] = ['role' => 'assistant', 'content' => null, 'tool_calls' => $assistantToolCalls];
+
+            foreach ($toolCallsAccum as $tc) {
+                $outcome = (new \App\Services\ToolExecutionService())->run(
+                    $tc,
+                    $toolRegistry,
+                    $user,
+                    $conversation,
+                    $assistantMessage,
+                    $history,
+                    $model,
+                    $temperature,
+                    $maxTokens,
+                    function () use ($tc) {
+                        echo "data: " . json_encode(['tool_status' => 'a_executar', 'tool' => $tc['name']]) . "\n\n";
+                        ob_flush();
+                        flush();
+                    }
+                );
+
+                if ($outcome['status'] === 'a_aguardar_confirmacao') {
+                    echo "data: " . json_encode(['confirmation_required' => $outcome['confirmation']]) . "\n\n";
+                    ob_flush();
+                    flush();
+
+                    $pendingConfirmation = true;
+                    break;
+                }
+
+                echo "data: " . json_encode(['tool_status' => $outcome['status'], 'tool' => $outcome['tool'], 'result' => $outcome['result']]) . "\n\n";
+                ob_flush();
+                flush();
+            }
+
+            if ($pendingConfirmation) {
+                break;
+            }
+        }
+
+        return $pendingConfirmation;
     }
 
     /**

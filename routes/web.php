@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Admin\AuditLogController;
+use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\KnowledgeController;
 use App\Http\Controllers\Admin\UserLimitController;
 use App\Http\Controllers\ConversationController;
@@ -25,6 +26,11 @@ Route::middleware(['auth'])->group(function () {
         return inertia('Chat/Index');
     })->name('dashboard');
 
+    // Perfil (Breeze)
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+
     // Modelos
     Route::get('/api/models', [ModelController::class, 'index']);
 
@@ -43,6 +49,10 @@ Route::middleware(['auth'])->group(function () {
 
     // Mensagens (streaming)
     Route::post('/api/conversations/{conversation}/messages', [MessageController::class, 'store']);
+
+    // Confirmação de ferramentas
+    Route::post('/api/tool-executions/{toolExecution}/confirm', [MessageController::class, 'confirmTool']);
+    Route::post('/api/tool-executions/{toolExecution}/reject', [MessageController::class, 'rejectTool']);
 
     // Prompts
     Route::get('/api/prompts', [PromptController::class, 'index']);
@@ -89,4 +99,5 @@ Route::middleware(['auth'])->group(function () {
     Route::delete('/api/knowledge/documents/{document}', [KnowledgeController::class, 'deleteDocument']);
     Route::post('/api/knowledge/documents/{document}/reprocess', [KnowledgeController::class, 'reprocessDocument']);
     Route::post('/api/knowledge/{collection}/search', [KnowledgeController::class, 'search']);
+    Route::get('/api/knowledge/documents/{document}/download', [KnowledgeController::class, 'downloadDocument']);
 });

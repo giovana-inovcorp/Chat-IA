@@ -10,13 +10,15 @@ class RagService
         private EmbeddingService $embeddingService
     ) {}
 
-    public function search(string $query, int $collectionId, int $topK = 5): array
+    public function search(string $query, int|array $collectionIds, int $topK = 5): array
     {
         $queryEmbedding = $this->embeddingService->embed($query);
 
+        $collectionIds = is_array($collectionIds) ? $collectionIds : [$collectionIds];
+
         $segments = KnowledgeSegment::whereHas('document', fn($q) =>
-            $q->where('collection_id', $collectionId)->where('status', 'ready')
-        )->get(['id', 'content', 'embedding', 'document_id']);
+            $q->whereIn('collection_id', $collectionIds)->where('status', 'ready')
+        )->get(['id', 'content', 'embedding', 'document_id', 'page']);
 
         $results = [];
 
@@ -32,6 +34,7 @@ class RagService
                 'id'            => $segment->id,
                 'content'       => $segment->content,
                 'document_id'   => $segment->document_id,
+                'page'          => $segment->page,
                 'similarity'    => $similarity,
                 'document_name' => $segment->document->original_name,
             ];

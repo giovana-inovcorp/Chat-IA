@@ -246,4 +246,48 @@ class KnowledgeTest extends TestCase
         // (o bloco RAG do MessageController é ignorado).
         $response->assertStatus(200);
     }
+
+    public function test_chat_uses_context_when_a_collection_is_active(): void
+    {
+        config(['services.openrouter.api_key' => 'test-key']);
+
+        Http::fake([
+            '*/chat/completions' => Http::response([
+                'choices' => [['message' => ['content' => 'Título de teste']]],
+            ], 200),
+        ]);
+
+        $user = User::factory()->create();
+
+        $collection = KnowledgeCollection::create([
+            'user_id' => $user->id, 'name' => 'Procedimentos', 'description' => '',
+        ]);
+
+        $ragService = Mockery::mock(RagService::class);
+        $ragService->shouldReceive('search')
+            ->once()
+            ->with('Como peço férias?', [$collection->id], 5)
+            ->andReturn([[
+                'id'            => 1,
+                'content'       => 'Procedimento de marcação de ausências: envia um pedido ao teu gestor.',
+                'document_id'   => 1,
+                'similarity'    => 0.9,
+                'document_name' => 'procedimentos.txt',
+            ]]);
+        $this->app->instance(RagService::class, $ragService);
+
+        $conversation = Conversation::create([
+            'user_id' => $user->id,
+            'title'   => 'Nova conversa',
+        ]);
+
+        $response = $this->actingAs($user)
+            ->postJson("/api/conversations/{$conversation->id}/messages", [
+                'content'       => 'Como peço férias?',
+                'model'         => 'openai/gpt-4o-mini',
+                'collection_ids' => [$collection->id],
+            ]);
+
+        $response->assertStatus(200);
+    }
 }

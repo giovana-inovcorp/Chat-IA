@@ -136,4 +136,17 @@ class KnowledgeController extends Controller
 
         return response()->json(['results' => $results]);
     }
+
+    public function downloadDocument(KnowledgeDocument $document)
+    {
+        if ($document->collection->user_id !== auth()->id()) {
+            abort(403);
+        }
+
+        if (! Storage::exists($document->filename)) {
+            abort(404);
+        }
+
+        return Storage::download($document->filename, $document->original_name);
+    }
 }

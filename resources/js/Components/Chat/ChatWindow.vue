@@ -36,6 +36,8 @@ const messagesContainer = ref(null)
 const messages = ref([])
 const isStreaming = ref(false)
 const references = ref([])
+const pendingConfirmation = ref(null)
+const toolStatuses = ref([])
 const conversationTitle = ref('')
 const showExportMenu = ref(false)
 const showSharePanel = ref(false)
@@ -56,6 +58,7 @@ watch(() => props.conversation, async (newConversation, oldConversation) => {
             messages.value = [...(newConversation.messages || [])]
             shareUrl.value = ''
             showSharePanel.value = false
+            pendingConfirmation.value = null
             if (props.searchTerm) {
                 highlightTerm.value = props.searchTerm
                 await nextTick()
@@ -79,6 +82,7 @@ watch(() => props.conversation, async (newConversation, oldConversation) => {
         shareUrl.value = ''
         showSharePanel.value = false
         highlightTerm.value = ''
+        pendingConfirmation.value = null
     }
 }, { immediate: true, deep: true })
 
@@ -136,7 +140,7 @@ async function scrollToBottom() {
     }
 }
 
-async function sendMessage({ content, model, temperature, maxTokens, file, collection_id }) {
+async function sendMessage({ content, model, temperature, maxTokens, file, collection_ids }) {
     let conversation = props.conversation
 
     if (!conversation) {
@@ -151,6 +155,7 @@ async function sendMessage({ content, model, temperature, maxTokens, file, colle
 
     const isFirstMessage = messages.value.length === 0
     references.value = []
+    toolStatuses.value = []
 
     // Adiciona mensagem do utilizador
     messages.value.push({ role: 'user', content })
@@ -171,11 +176,11 @@ async function sendMessage({ content, model, temperature, maxTokens, file, colle
             formData.append('temperature', temperature)
             formData.append('max_tokens', maxTokens)
             formData.append('file', file)
-            if (collection_id) formData.append('collection_id', collection_id)
+            if (collection_ids) collection_ids.forEach(id => formData.append('collection_ids[]', id))
             body = formData
             headers = { 'X-CSRF-TOKEN': csrf }
         } else {
-            body = JSON.stringify({ content, model, temperature, max_tokens: maxTokens, collection_id })
+            body = JSON.stringify({ content, model, temperature, max_tokens: maxTokens, collection_ids })
             headers = { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf }
         }
 
@@ -194,65 +199,165 @@ async function sendMessage({ content, model, temperature, maxTokens, file, colle
             return
         }
 
-        const reader = response.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-        let streamDone = false
-
-        while (!streamDone) {
-            const { done, value } = await reader.read()
-            if (done) break
-
-            buffer += decoder.decode(value, { stream: true })
-            const lines = buffer.split('\n')
-            buffer = lines.pop() // guarda linha incompleta para o próximo ciclo
-
-            for (const line of lines) {
-                const trimmed = line.trim()
-                if (!trimmed.startsWith('data: ')) continue
-
-                const data = trimmed.slice(6)
-
-                if (data === '[DONE]') {
-                    isStreaming.value = false
-                    if (isFirstMessage) {
-                        const updated = await fetch(`/api/conversations/${conversation.id}`)
-                        const updatedConversation = await updated.json()
-                        conversationTitle.value = updatedConversation.title
-                        emit('conversation-updated', {
-                            id: conversation.id,
-                            title: updatedConversation.title,
-                        })
-                    }
-                    streamDone = true
-                    continue
-                }
-
-                try {
-                    const parsed = JSON.parse(data)
-                    if (parsed.chunk) {
-                        messages.value[assistantIndex] = {
-                            ...messages.value[assistantIndex],
-                            content: messages.value[assistantIndex].content + parsed.chunk
-                        }
-                        await scrollToBottom()
-                    }
-                    if (parsed.usage) {
-                        usageInfo.value = parsed.usage
-                    }
-                    if (parsed.references) {
-                        references.value = parsed.references
-                    }
-                } catch (e) {
-                    // ignora linhas malformadas
-                }
-            }
-        }
+        await consumeStream(response, assistantIndex, { isFirstMessage, conversation })
     } catch (error) {
         messages.value[assistantIndex] = {
             ...messages.value[assistantIndex],
             content: 'Erro ao contactar a API. Tenta novamente.'
         }
+        console.error(error)
+    } finally {
+        isStreaming.value = false
+    }
+}
+
+async function consumeStream(response, assistantIndex, { isFirstMessage = false, conversation = null } = {}) {
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let streamDone = false
+
+    while (!streamDone) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() // guarda linha incompleta para o próximo ciclo
+
+        for (const line of lines) {
+            const trimmed = line.trim()
+            if (!trimmed.startsWith('data: ')) continue
+
+            const data = trimmed.slice(6)
+
+            if (data === '[DONE]') {
+                isStreaming.value = false
+                if (isFirstMessage && conversation) {
+                    const updated = await fetch(`/api/conversations/${conversation.id}`)
+                    const updatedConversation = await updated.json()
+                    conversationTitle.value = updatedConversation.title
+                    emit('conversation-updated', {
+                        id: conversation.id,
+                        title: updatedConversation.title,
+                    })
+                }
+                streamDone = true
+                continue
+            }
+
+            try {
+                const parsed = JSON.parse(data)
+                if (parsed.chunk) {
+                    messages.value[assistantIndex] = {
+                        ...messages.value[assistantIndex],
+                        content: messages.value[assistantIndex].content + parsed.chunk
+                    }
+                    await scrollToBottom()
+                }
+                if (parsed.usage) {
+                    usageInfo.value = parsed.usage
+                }
+                if (parsed.references) {
+                    references.value = parsed.references
+                }
+                if (parsed.confirmation_required) {
+                    pendingConfirmation.value = {
+                        ...parsed.confirmation_required,
+                        assistantIndex,
+                    }
+                }
+                if (parsed.tool_status === 'a_executar') {
+                    toolStatuses.value.push({ tool: parsed.tool, status: 'a_executar', result: null })
+                } else if (parsed.tool_status === 'concluido' || parsed.tool_status === 'erro') {
+                    for (let i = toolStatuses.value.length - 1; i >= 0; i--) {
+                        if (toolStatuses.value[i].tool === parsed.tool && toolStatuses.value[i].status === 'a_executar') {
+                            toolStatuses.value[i] = { tool: parsed.tool, status: parsed.tool_status, result: parsed.result }
+                            break
+                        }
+                    }
+                }
+            } catch (e) {
+                // ignora linhas malformadas
+            }
+        }
+    }
+}
+
+function toolStatusLabel(status) {
+    const labels = {
+        a_executar: 'a executar…',
+        concluido: 'concluído',
+        erro: 'erro',
+    }
+    return labels[status] ?? status
+}
+
+function toolLabel(tool) {
+    const labels = {
+        calculator: 'Calculadora',
+        search_users: 'Pesquisa de utilizadores',
+        query_usage: 'Consulta de uso',
+        create_note: 'Criar nota',
+        search_knowledge: 'Pesquisa na base de conhecimento',
+    }
+    return labels[tool] ?? tool
+}
+
+async function confirmToolExecution() {
+    if (!pendingConfirmation.value) return
+    const { execution_id, assistantIndex } = pendingConfirmation.value
+    const csrf = document.querySelector('meta[name="csrf-token"]').content
+    pendingConfirmation.value = null
+    isStreaming.value = true
+
+    try {
+        const response = await fetch(`/api/tool-executions/${execution_id}/confirm`, {
+            method: 'POST',
+            headers: { 'X-CSRF-TOKEN': csrf },
+        })
+
+        if (!response.ok) {
+            const json = await response.json().catch(() => ({}))
+            messages.value[assistantIndex] = {
+                ...messages.value[assistantIndex],
+                content: json.error ?? 'Erro ao confirmar a ação. Tenta novamente.',
+            }
+            return
+        }
+
+        await consumeStream(response, assistantIndex)
+    } catch (error) {
+        console.error(error)
+    } finally {
+        isStreaming.value = false
+    }
+}
+
+async function rejectToolExecution() {
+    if (!pendingConfirmation.value) return
+    const { execution_id, assistantIndex } = pendingConfirmation.value
+    const csrf = document.querySelector('meta[name="csrf-token"]').content
+    pendingConfirmation.value = null
+    isStreaming.value = true
+
+    try {
+        const response = await fetch(`/api/tool-executions/${execution_id}/reject`, {
+            method: 'POST',
+            headers: { 'X-CSRF-TOKEN': csrf },
+        })
+
+        if (!response.ok) {
+            const json = await response.json().catch(() => ({}))
+            messages.value[assistantIndex] = {
+                ...messages.value[assistantIndex],
+                content: json.error ?? 'Erro ao cancelar a ação. Tenta novamente.',
+            }
+            return
+        }
+
+        await consumeStream(response, assistantIndex)
+    } catch (error) {
         console.error(error)
     } finally {
         isStreaming.value = false
@@ -403,12 +508,72 @@ function excerpt(text, length = 160) {
 
             </div>
 
+            <!-- Estados das ferramentas -->
+            <div v-if="toolStatuses.length > 0" class="px-6 pt-2 space-y-1">
+                <details v-for="(ts, i) in toolStatuses" :key="i" class="text-xs">
+                    <summary
+                        class="cursor-pointer inline-flex items-center gap-1.5 select-none"
+                        :class="{
+                            'text-muted-foreground': ts.status === 'a_executar',
+                            'text-green-600': ts.status === 'concluido',
+                            'text-destructive': ts.status === 'erro',
+                        }"
+                    >
+                        <span
+                            class="inline-block w-1.5 h-1.5 rounded-full"
+                            :class="{
+                                'bg-muted-foreground animate-pulse': ts.status === 'a_executar',
+                                'bg-green-600': ts.status === 'concluido',
+                                'bg-destructive': ts.status === 'erro',
+                            }"
+                        />
+                        {{ toolLabel(ts.tool) }} — {{ toolStatusLabel(ts.status) }}
+                    </summary>
+                    <pre v-if="ts.result" class="mt-1 ml-3 p-2 rounded bg-muted text-[11px] overflow-x-auto">{{ JSON.stringify(ts.result, null, 2) }}</pre>
+                </details>
+            </div>
+
+            <!-- Confirmação de ação -->
+            <div v-if="pendingConfirmation" class="px-6 pb-3">
+                <div class="border border-border rounded-lg p-4 bg-muted/50 space-y-3">
+                    <p class="text-sm font-medium">
+                        O assistente quer executar a ação <span class="font-semibold">{{ toolLabel(pendingConfirmation.tool) }}</span>. Confirmas?
+                    </p>
+                    <ul class="text-xs text-muted-foreground space-y-0.5">
+                        <li v-for="(value, key) in pendingConfirmation.parameters" :key="key">
+                            <span class="font-medium">{{ key }}:</span> {{ value }}
+                        </li>
+                    </ul>
+                    <div class="flex gap-2">
+                        <button
+                            class="text-sm px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
+                            :disabled="isStreaming"
+                            @click="confirmToolExecution"
+                        >
+                            Confirmar
+                        </button>
+                        <button
+                            class="text-sm px-3 py-1.5 rounded-md border border-input hover:bg-muted transition-colors disabled:opacity-50"
+                            :disabled="isStreaming"
+                            @click="rejectToolExecution"
+                        >
+                            Cancelar
+                        </button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Fontes RAG -->
             <div v-if="references.length > 0" class="px-6 pb-3 text-xs text-muted-foreground">
                 <p class="font-medium mb-1">Fontes utilizadas:</p>
                 <ul class="space-y-1.5">
                     <li v-for="ref in references" :key="ref.id">
-                        <div>📄 {{ ref.document_name }} (relevância: {{ (ref.similarity * 100).toFixed(0) }}%)</div>
+                        <div>
+                            📄
+                            <a :href="`/api/knowledge/documents/${ref.document_id}/download`" target="_blank" class="underline hover:text-foreground">{{ ref.document_name }}</a>
+                            <span v-if="ref.page"> — pág. {{ ref.page }}</span>
+                            (relevância: {{ (ref.similarity * 100).toFixed(0) }}%)
+                        </div>
                         <p class="pl-5 italic text-muted-foreground/80">"{{ excerpt(ref.content) }}"</p>
                     </li>
                 </ul>
@@ -419,7 +584,7 @@ function excerpt(text, length = 160) {
             </div>
 
             <MessageInput
-                :disabled="isStreaming"
+                :disabled="isStreaming || !!pendingConfirmation"
                 :model-list="modelList"
                 :api-configured="apiConfigured"
                 :usage-info="{ ...usageInfo, warningLevel: warningLevel }"

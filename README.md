@@ -42,6 +42,58 @@ A full-stack chat application built with Laravel 13, Vue 3, and Inertia.js. Supp
 - Audit log viewer with CSV export
 - Usage limits dashboard
 
+### Tools & Function Calling
+- The assistant can call backend tools during a conversation to perform concrete actions, not just generate text
+- 5 tools available: calculator, user lookup, usage query, note creation, and knowledge base search
+- Write actions (creating a note) pause the response and require explicit user confirmation before running
+- Every tool call is logged to an audit table (`tool_executions`) with status, parameters, result, duration, and errors
+- Model-provided parameters are always validated server-side and never trusted directly (see "Tools" table below)
+- The UI shows a live status indicator per tool call (waiting / running / done / error), expandable to see the technical result
+
+## Architecture
+
+### Knowledge base (RAG) flow
+
+```mermaid
+flowchart LR
+    A[Upload] --> B[Processing]
+    B --> C[Search]
+    C --> D[Context]
+    D --> E[LLM]
+```
+
+1. **Upload** — the user uploads a document to a `KnowledgeCollection` via `KnowledgeController@uploadDocument`; the file is parsed and stored as a `KnowledgeDocument`.
+2. **Processing** — the `ProcessKnowledgeDocument` queued job splits the document into chunks and calls `EmbeddingService` (Ollama, `nomic-embed-text`) to generate an embedding vector for each chunk, stored as `KnowledgeSegment` rows.
+3. **Search** — when a user asks a question with a collection selected, `RagService::search()` embeds the query and ranks the stored segments by cosine similarity.
+4. **Context** — the top matching segments are injected as context into the conversation history before the message is sent to the model.
+5. **LLM** — `MessageController` streams the model's response (via `OpenRouterService`) back to the user over Server-Sent Events, citing the sources used.
+
+### Tools & Function Calling flow
+
+```mermaid
+flowchart LR
+    A[User message] --> B[Model decides to call a tool]
+    B --> C[Validate + Authorize]
+    C -->|Write action| D[Pause: wait for confirmation]
+    D -->|Confirmed| E[Execute tool]
+    D -->|Rejected| F[Inform model, continue]
+    C -->|Read-only action| E
+    E --> G[Log to audit table]
+    G --> H[Model continues with the result]
+```
+
+Each tool implements a common `App\Contracts\Tool` interface (`name`, `description`, `parameters`, `requiresConfirmation`, `authorize`, `execute`) and is registered in `App\Services\ToolRegistry`. Parameters coming from the model are treated as untrusted input: every tool validates them server-side (via `Illuminate\Support\Facades\Validator`) before doing anything, and `authorize()` checks the acting user's permissions independently of what the model provided.
+
+| Tool | Name (used by the model) | Requires confirmation | Key parameters |
+|---|---|---|---|
+| Calculator | `calculator` | No | `operation` (add / subtract / multiply / divide / percentage), `a`, `b` |
+| User lookup | `search_users` | No — admin only | `name`, `email`, `status` (verificado / por_verificar) |
+| Usage query | `query_usage` | No | `period` (today / 7_days / 30_days / this_month / all_time), `scope` (self / user / global), `user_email` |
+| Create note | `create_note` | **Yes** | `title`, `content` |
+| Knowledge base search | `search_knowledge` | No | `query`, `collection_ids`, `top_k` |
+
+Every tool call — successful or not — is recorded in the `tool_executions` table with the acting user, the tool name, the parameters received, the result (or error message), the duration, and its status (`a_analisar` → `a_executar` → `concluido`/`erro`, or `a_aguardar_confirmacao`/`cancelado` for actions needing confirmation).
+
 ## Requirements
 
 - PHP 8.3+
