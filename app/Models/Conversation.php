@@ -16,11 +16,29 @@ class Conversation extends Model
         'user_id',
         'title',
         'is_pinned',
+        'assistant_id',
+        'assistant_snapshot',
+        'assistant_history',
     ];
+
+    protected $hidden = ['assistant_snapshot', 'assistant_history'];
+
+    protected function casts(): array
+    {
+        return [
+            'assistant_snapshot' => 'array',
+            'assistant_history'  => 'array',
+        ];
+    }
 
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function assistant(): BelongsTo
+    {
+        return $this->belongsTo(Assistant::class);
     }
 
     public function messages(): HasMany

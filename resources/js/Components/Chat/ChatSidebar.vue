@@ -210,8 +210,10 @@ function logout() {
                 <a href="/admin/usage-limits" class="block text-xs px-3 py-2 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">🔒 Limites de Uso</a>
             </div>
 
-            <!-- Knowledge base link -->
+            <!-- Quick links -->
             <div class="border-t border-border">
+                <a href="/assistants" class="block text-xs px-3 py-2 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">🤖 Assistentes</a>
+                <a href="/memories" class="block text-xs px-3 py-2 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">🧠 Memórias</a>
                 <a href="/knowledge" class="block text-xs px-3 py-2 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">📚 Base de Conhecimento</a>
             </div>
 

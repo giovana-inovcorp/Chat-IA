@@ -46,13 +46,38 @@ class ConversationController extends Controller
     /**
      * Cria uma nova conversa vazia.
      */
-    public function store(): JsonResponse
+    public function store(Request $request): JsonResponse
     {
+        $validated = $request->validate([
+            'assistant_id' => ['nullable', 'integer', 'exists:assistants,id'],
+        ]);
+
+        $assistantId = $validated['assistant_id'] ?? null;
+        $snapshot    = null;
+
+        if ($assistantId) {
+            $assistant = \App\Models\Assistant::find($assistantId);
+            abort_if(! $assistant || $assistant->user_id !== auth()->id() || $assistant->status !== 'active', 403);
+
+            $snapshot = [
+                'name'           => $assistant->name,
+                'instructions'   => $assistant->instructions,
+                'model'          => $assistant->model,
+                'temperature'    => $assistant->temperature,
+                'max_tokens'     => $assistant->max_tokens,
+                'collection_ids' => $assistant->knowledgeCollections()->pluck('id')->toArray(),
+            ];
+        }
+
         $conversation = auth()->user()
             ->conversations()
-            ->create(['title' => 'Nova conversa']);
+            ->create([
+                'title'              => 'Nova conversa',
+                'assistant_id'       => $assistantId,
+                'assistant_snapshot' => $snapshot,
+            ]);
 
-        return response()->json($conversation, 201);
+        return response()->json($conversation->load('assistant:id,name,icon'), 201);
     }
 
     /**
@@ -65,7 +90,7 @@ class ConversationController extends Controller
             abort(403);
         }
 
-        $conversation->load('messages');
+        $conversation->load(['messages.memories:id,title', 'assistant:id,name,icon']);
 
         return response()->json($conversation);
     }
@@ -127,6 +152,50 @@ class ConversationController extends Controller
         });
 
         return response()->json($results);
+    }
+
+    public function switchAssistant(Request $request, Conversation $conversation): JsonResponse
+    {
+        if ($conversation->user_id !== auth()->id()) {
+            abort(403);
+        }
+
+        $validated = $request->validate([
+            'assistant_id' => ['nullable', 'integer', 'exists:assistants,id'],
+        ]);
+
+        $assistantId = $validated['assistant_id'];
+        $snapshot    = null;
+
+        if ($assistantId) {
+            $assistant = \App\Models\Assistant::find($assistantId);
+            abort_if(! $assistant || $assistant->user_id !== auth()->id() || $assistant->status !== 'active', 403);
+
+            $snapshot = [
+                'name'           => $assistant->name,
+                'instructions'   => $assistant->instructions,
+                'model'          => $assistant->model,
+                'temperature'    => $assistant->temperature,
+                'max_tokens'     => $assistant->max_tokens,
+                'collection_ids' => $assistant->knowledgeCollections()->pluck('id')->toArray(),
+            ];
+        }
+
+        $history = $conversation->assistant_history ?? [];
+        if ($conversation->assistant_snapshot) {
+            $history[] = [
+                'changed_at'        => now()->toIso8601String(),
+                'previous_snapshot' => $conversation->assistant_snapshot,
+            ];
+        }
+
+        $conversation->update([
+            'assistant_id'       => $assistantId,
+            'assistant_snapshot' => $snapshot,
+            'assistant_history'  => $history,
+        ]);
+
+        return response()->json($conversation->load('assistant:id,name,icon'));
     }
 
     public function export(Request $request, Conversation $conversation)

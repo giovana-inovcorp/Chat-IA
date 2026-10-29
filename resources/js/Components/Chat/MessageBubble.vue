@@ -8,6 +8,8 @@ const props = defineProps({
     highlightTerm: { type: String, default: '' },
 })
 
+const emit = defineEmits(['save-suggestion', 'dismiss-suggestion'])
+
 const showComments = ref(false)
 const copied = ref(false)
 
@@ -52,6 +54,41 @@ function highlightContent(text) {
                     <span v-html="highlightContent(props.message.content)" />
                 </template>
                 <div v-else class="prose prose-sm max-w-none" v-html="highlightContent(marked(props.message.content))" />
+            </div>
+        </div>
+
+        <!-- Memórias usadas -->
+        <div
+            v-if="message.role === 'assistant' && (message.memoriesUsed?.length || message.memories?.length)"
+            class="mt-1 text-xs text-muted-foreground pl-1"
+        >
+            🧠 Memórias usadas: {{ (message.memoriesUsed || message.memories).map(m => m.title).join(', ') }}
+        </div>
+
+        <!-- Sugestão de memória -->
+        <div
+            v-if="message.role === 'assistant' && message.memorySuggestion"
+            class="mt-2 border border-border rounded-lg px-3 py-2.5 bg-muted/30 text-sm flex items-start justify-between gap-3"
+        >
+            <div class="flex-1 min-w-0">
+                <p class="text-xs text-muted-foreground mb-0.5">Guardar na memória?</p>
+                <p class="font-medium text-sm truncate">{{ message.memorySuggestion.title }}</p>
+                <p class="text-xs text-muted-foreground mt-0.5 line-clamp-2">{{ message.memorySuggestion.content }}</p>
+                <p v-if="message.memorySuggestion.suggestionError" class="text-xs text-destructive mt-1">{{ message.memorySuggestion.suggestionError }}</p>
+            </div>
+            <div class="flex flex-col gap-1 shrink-0">
+                <button
+                    @click="emit('save-suggestion', message.memorySuggestion)"
+                    class="text-xs px-2.5 py-1 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                >
+                    Guardar
+                </button>
+                <button
+                    @click="emit('dismiss-suggestion')"
+                    class="text-xs px-2.5 py-1 rounded-md border border-border hover:bg-muted transition-colors"
+                >
+                    Rejeitar
+                </button>
             </div>
         </div>
 

@@ -9,9 +9,15 @@ const props = defineProps({
     apiConfigured: { type: Boolean, default: true },
     searchTerm: { type: String, default: '' },
     collections: { type: Array, default: () => [] },
+    assistants: { type: Array, default: () => [] },
 })
 
 const emit = defineEmits(['conversation-updated', 'create-conversation', 'conversation-created'])
+
+const selectedAssistantId = ref(null)
+const currentAssistant = ref(null)
+const currentAssistantId = ref(null)
+const switchError = ref('')
 
 const pendingPrompt = ref('')
 
@@ -54,6 +60,9 @@ watch(() => props.searchTerm, (newTerm) => {
 watch(() => props.conversation, async (newConversation, oldConversation) => {
     if (newConversation) {
         conversationTitle.value = newConversation.title
+        currentAssistant.value = newConversation.assistant ?? null
+        currentAssistantId.value = newConversation.assistant_id ?? null
+        switchError.value = ''
         if (newConversation.id !== oldConversation?.id && oldConversation !== null) {
             messages.value = [...(newConversation.messages || [])]
             shareUrl.value = ''
@@ -147,7 +156,8 @@ async function sendMessage({ content, model, temperature, maxTokens, file, colle
         const csrf = document.querySelector('meta[name="csrf-token"]').content
         const res = await fetch('/api/conversations', {
             method: 'POST',
-            headers: { 'X-CSRF-TOKEN': csrf },
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+            body: JSON.stringify({ assistant_id: selectedAssistantId.value }),
         })
         conversation = await res.json()
         emit('conversation-created', conversation)
@@ -165,6 +175,7 @@ async function sendMessage({ content, model, temperature, maxTokens, file, colle
     messages.value.push({ role: 'assistant', content: '' })
     const assistantIndex = messages.value.length - 1
     isStreaming.value = true
+    let userMsgId = null
 
     try {
         let body, headers
@@ -199,7 +210,7 @@ async function sendMessage({ content, model, temperature, maxTokens, file, colle
             return
         }
 
-        await consumeStream(response, assistantIndex, { isFirstMessage, conversation })
+        userMsgId = await consumeStream(response, assistantIndex, { isFirstMessage, conversation })
     } catch (error) {
         messages.value[assistantIndex] = {
             ...messages.value[assistantIndex],
@@ -209,6 +220,10 @@ async function sendMessage({ content, model, temperature, maxTokens, file, colle
     } finally {
         isStreaming.value = false
     }
+
+    if (userMsgId && !pendingConfirmation.value) {
+        fetchMemorySuggestion(userMsgId, assistantIndex)
+    }
 }
 
 async function consumeStream(response, assistantIndex, { isFirstMessage = false, conversation = null } = {}) {
@@ -216,6 +231,7 @@ async function consumeStream(response, assistantIndex, { isFirstMessage = false,
     const decoder = new TextDecoder()
     let buffer = ''
     let streamDone = false
+    let userMessageId = null
 
     while (!streamDone) {
         const { done, value } = await reader.read()
@@ -261,6 +277,15 @@ async function consumeStream(response, assistantIndex, { isFirstMessage = false,
                 if (parsed.references) {
                     references.value = parsed.references
                 }
+                if (parsed.memories_used) {
+                    messages.value[assistantIndex] = {
+                        ...messages.value[assistantIndex],
+                        memoriesUsed: parsed.memories_used,
+                    }
+                }
+                if (parsed.user_message_id) {
+                    userMessageId = parsed.user_message_id
+                }
                 if (parsed.confirmation_required) {
                     pendingConfirmation.value = {
                         ...parsed.confirmation_required,
@@ -282,6 +307,73 @@ async function consumeStream(response, assistantIndex, { isFirstMessage = false,
             }
         }
     }
+
+    return userMessageId
+}
+
+async function fetchMemorySuggestion(userMsgId, assistantIndex) {
+    const csrf = document.querySelector('meta[name="csrf-token"]').content
+    try {
+        const res = await fetch('/api/memories/suggest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'Accept': 'application/json' },
+            body: JSON.stringify({ message_id: userMsgId }),
+        })
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.suggest) {
+            messages.value[assistantIndex] = {
+                ...messages.value[assistantIndex],
+                memorySuggestion: { title: data.title, content: data.content },
+            }
+        }
+    } catch { /* ignore */ }
+}
+
+async function saveSuggestion(index, suggestion) {
+    const csrf = document.querySelector('meta[name="csrf-token"]').content
+    try {
+        const res = await fetch('/api/memories', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'Accept': 'application/json' },
+            body: JSON.stringify({ title: suggestion.title, content: suggestion.content, source: 'suggested' }),
+        })
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}))
+            messages.value[index] = {
+                ...messages.value[index],
+                memorySuggestion: { ...messages.value[index].memorySuggestion, suggestionError: data.message ?? 'Erro ao guardar a memória.' },
+            }
+            return
+        }
+    } catch { /* ignore */ }
+    messages.value[index] = { ...messages.value[index], memorySuggestion: null }
+}
+
+async function switchAssistant(value) {
+    const assistantId = value ? parseInt(value) : null
+    const previous = currentAssistantId.value
+    currentAssistantId.value = assistantId
+    switchError.value = ''
+    const csrf = document.querySelector('meta[name="csrf-token"]').content
+    const res = await fetch(`/api/conversations/${props.conversation.id}/assistant`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({ assistant_id: assistantId }),
+    })
+    if (!res.ok) {
+        currentAssistantId.value = previous
+        switchError.value = 'Não foi possível trocar de assistente.'
+        setTimeout(() => { switchError.value = '' }, 3000)
+        return
+    }
+    const updated = await res.json()
+    currentAssistant.value = updated.assistant ?? null
+    currentAssistantId.value = updated.assistant_id ?? null
+}
+
+function dismissSuggestion(index) {
+    messages.value[index] = { ...messages.value[index], memorySuggestion: null }
 }
 
 function toolStatusLabel(status) {
@@ -386,6 +478,15 @@ function excerpt(text, length = 160) {
                     {{ s.icon }} {{ s.label }}
                 </button>
             </div>
+            <div v-if="assistants.length > 0" class="w-full max-w-xl">
+                <select
+                    v-model="selectedAssistantId"
+                    class="w-full text-sm px-3 py-2 rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                    <option :value="null">Sem assistente</option>
+                    <option v-for="a in assistants" :key="a.id" :value="a.id">{{ a.icon || '🤖' }} {{ a.name }}</option>
+                </select>
+            </div>
             <MessageInput
                 :disabled="false"
                 :model-list="modelList"
@@ -393,6 +494,7 @@ function excerpt(text, length = 160) {
                 :initial-content="pendingPrompt"
                 :is-homepage="true"
                 :collections="collections"
+                :has-assistant="!!selectedAssistantId"
                 @send="sendMessage"
             />
         </div>
@@ -400,7 +502,20 @@ function excerpt(text, length = 160) {
         <template v-else>
             <div class="px-6 py-4 border-b border-border shrink-0">
                 <div class="flex items-center justify-between gap-2">
-                    <h2 class="font-semibold truncate">{{ conversationTitle }}</h2>
+                    <div class="flex items-center gap-2 min-w-0">
+                        <h2 class="font-semibold truncate">{{ conversationTitle }}</h2>
+                        <template v-if="assistants.length > 0">
+                            <select
+                                :value="currentAssistantId ?? ''"
+                                @change="switchAssistant($event.target.value)"
+                                class="text-xs px-2 py-0.5 rounded-full bg-muted border-0 focus:outline-none focus:ring-1 focus:ring-ring text-muted-foreground shrink-0 max-w-[180px]"
+                            >
+                                <option value="">Sem assistente</option>
+                                <option v-for="a in assistants" :key="a.id" :value="a.id">{{ a.icon || '🤖' }} {{ a.name }}</option>
+                            </select>
+                            <span v-if="switchError" class="text-xs text-destructive shrink-0">{{ switchError }}</span>
+                        </template>
+                    </div>
                     <div class="flex items-center gap-1 shrink-0">
                         <!-- Share button -->
                         <div class="relative">
@@ -504,6 +619,8 @@ function excerpt(text, length = 160) {
                     :key="index"
                     :message="message"
                     :highlight-term="highlightTerm"
+                    @save-suggestion="saveSuggestion(index, $event)"
+                    @dismiss-suggestion="dismissSuggestion(index)"
                 />
 
             </div>
@@ -589,6 +706,7 @@ function excerpt(text, length = 160) {
                 :api-configured="apiConfigured"
                 :usage-info="{ ...usageInfo, warningLevel: warningLevel }"
                 :collections="collections"
+                :has-assistant="!!conversation?.assistant"
                 @send="sendMessage"
             />
         </template>

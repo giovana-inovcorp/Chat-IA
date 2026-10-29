@@ -17,6 +17,7 @@ const props = defineProps({
     isHomepage: { type: Boolean, default: false },
     usageInfo: { type: Object, default: null },
     collections: { type: Array, default: () => [] },
+    hasAssistant: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['send'])
@@ -86,6 +87,7 @@ function onKeydown(e) {
         <!-- Selector de modelo, coleção e config -->
         <div :class="['flex items-center gap-2 mb-3', isHomepage ? 'justify-center' : '']">
             <ModelSelector
+                v-if="!hasAssistant"
                 v-model:modelId="model"
                 :modelList="modelList"
             />

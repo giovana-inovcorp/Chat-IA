@@ -11,7 +11,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['name', 'email', 'password', 'is_admin', 'monthly_token_limit', 'monthly_cost_limit_usd', 'tokens_used_this_month', 'cost_used_this_month', 'usage_reset_at'])]
+#[Fillable(['name', 'email', 'password', 'is_admin', 'monthly_token_limit', 'monthly_cost_limit_usd', 'tokens_used_this_month', 'cost_used_this_month', 'usage_reset_at', 'memory_enabled'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -29,6 +29,7 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'usage_reset_at' => 'datetime',
+            'memory_enabled' => 'boolean',
         ];
     }
 
@@ -45,5 +46,15 @@ class User extends Authenticatable
     public function knowledgeCollections(): HasMany
     {
         return $this->hasMany(KnowledgeCollection::class);
+    }
+
+    public function assistants(): HasMany
+    {
+        return $this->hasMany(Assistant::class);
+    }
+
+    public function memories(): HasMany
+    {
+        return $this->hasMany(Memory::class);
     }
 }

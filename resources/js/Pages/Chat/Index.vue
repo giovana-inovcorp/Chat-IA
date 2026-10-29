@@ -25,6 +25,7 @@ const conversations = ref([])
 const activeConversation = ref(null)
 const loadingConversations = ref(false)
 const knowledgeCollections = ref([])
+const assistants = ref([])
 const searchTerm = ref('')
 
 async function loadModels() {
@@ -91,10 +92,19 @@ async function loadKnowledgeCollections() {
     knowledgeCollections.value = await res.json()
 }
 
+async function loadAssistants() {
+    const res = await fetch('/api/assistants')
+    const data = await res.json()
+    assistants.value = data
+        .filter(a => a.status === 'active')
+        .sort((a, b) => (b.is_favorite ? 1 : 0) - (a.is_favorite ? 1 : 0))
+}
+
 onMounted(() => {
     loadModels()
     loadConversations()
     loadKnowledgeCollections()
+    loadAssistants()
 })
 </script>
 
@@ -136,6 +146,7 @@ onMounted(() => {
             :api-configured="apiConfigured"
             :search-term="searchTerm"
             :collections="knowledgeCollections"
+            :assistants="assistants"
             @conversation-updated="onConversationUpdated"
             @create-conversation="createConversation"
             @conversation-created="onConversationCreated"
