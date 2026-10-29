@@ -198,12 +198,7 @@ class MessageController extends Controller
         $usedMemories = collect();
         $useMemory = $user->memory_enabled && (! $assistant || $assistant->is_memory_active);
         if ($useMemory) {
-            $usedMemories = Memory::where('user_id', $user->id)
-                ->where('status', 'active')
-                ->orderByRaw('last_used_at IS NULL, last_used_at DESC')
-                ->orderByDesc('created_at')
-                ->limit(5)
-                ->get();
+            $usedMemories = (new \App\Services\MemorySelector())->select($user, $validated['content']);
 
             if ($usedMemories->isNotEmpty()) {
                 $memoryBlock = "<memorias_utilizador>\n";
